@@ -10,18 +10,22 @@ import numpy as np
 import threading
 import dataclasses
 from queue import Queue
-from typing import List, Any, Optional, Tuple, Union
-from lib.akari_yolo_lib.oakd_tracking_yolo import OakdTrackingYolo
-from lib.akari_yolo_lib.util import download_file
+from typing import List, Any, Optional
 from lib.akari_chatgpt_bot.lib.chat_akari import ChatStreamAkari
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "lib/grpc"))
+sys.path.append(os.path.join(os.path.dirname(__file__), "grpc"))
 import local_vlm_server_pb2
 import local_vlm_server_pb2_grpc
 
 ACT_LOG_SUMMARISING_PROMPT = """
-与えられた文章を元に、各行動とその時刻を抽出し、要約してください。
+あなたは時系列データを元に、ユーザーの行動記録をまとめています。
+与えられた記録を元に、各行動とその時刻を抽出し、簡潔に要約してください。
 """
+LOG_SUMMARISING_PROMPT = """
+あなたは時系列データを元に、ユーザーの記録をまとめています。
+与えられた文章を元に、最初にユーザーの年齢、性別、外観の特徴をまとめた後、各行動とその時刻を抽出し、要約してください。
+"""
+
 
 @dataclasses.dataclass
 class FrameData(object):
@@ -31,11 +35,14 @@ class FrameData(object):
     tracklets: List[Any]
     timestamp: datetime.datetime
 
+
 @dataclasses.dataclass
 class CaptionInfo(object):
     """キャプション情報を保持するクラス"""
+
     caption: str
     timestamp: datetime.datetime
+
 
 class PersonLog(object):
     """トラッキング対象の人物情報を保持するクラス"""
@@ -48,10 +55,21 @@ class PersonLog(object):
         self.start_time: datetime.datetime = start_time
         self.end_time: Optional[datetime.datetime] = None
 
+
 class TrackingCaptioning(object):
     """トラッキングキャプショニングクラス"""
-    def __init__(self, queue: Queue[FrameData], port: str, host: str = "10020") -> None:
+
+    def __init__(self, queue: Queue[FrameData], host: str, port: str = "10020") -> None:
+        """
+        コンストラクタ
+
+        Args:
+            queue (Queue[FrameData]): トラッキングデータのキュー
+            host (str): gRPCサーバーのホスト名
+            port (str): gRPCサーバーのポート番号
+        """
         self.MAX_ACT_LOG_SIZE = 120
+        self.lock = threading.Lock()
         self.queue = queue
         # gRPCチャネルを作成
         channel = grpc.insecure_channel(f"{host}:{port}")
@@ -62,10 +80,7 @@ class TrackingCaptioning(object):
         now = datetime.datetime.now()
         log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "log")
         os.makedirs(log_dir, exist_ok=True)
-        self.log_path = os.path.join(
-            log_dir,
-            f"{now.strftime('%Y%m%d_%H%M%S')}.csv"
-        )
+        self.log_path = os.path.join(log_dir, f"{now.strftime('%Y%m%d_%H%M%S')}.csv")
         self.log_control_thread = threading.Thread(
             target=self.log_control,
             args=(self.log_path,),
@@ -73,28 +88,26 @@ class TrackingCaptioning(object):
         )
         self.log_control_thread.start()
 
-    def log_control(self, log_path: str) -> None:
+    def log_control(self) -> None:
+        """ログ制御スレッド"""
         while True:
             # actrion_logが指定サイズ以上になったら要約を生成
             for person in self.cur_tracking_person_list:
                 self.summarize_act_log(person)
             # track_finish_id_queueが空でなければ、まとめてログを保存
             if not self.track_finish_id_queue.empty():
-                # track_finish_id_queueからIDを取得
                 id = self.track_finish_id_queue.get()
                 person = self.get_person_log(id)
                 if person is not None:
-                    # 要約を作成
-                    self.summary_act_log(person)
-                    # ログを保存
-                    with open(log_path, "a") as f:
-                        f.write(f"{id},{person.start_time},{person.end_time},{person.appearance_log}\n")
-                    # 人物ログを削除
+                    # 要約を生成し、csvに記録後、トラッキングリストから削除
+                    summary = self.summarize_act_log(person)
+                    self.add_log_to_csv(person, summary)
+                    self.lock.acquire()
                     self.cur_tracking_person_list.remove(person)
-
-
+                    self.lock.release()
 
     def run(self) -> None:
+        """トラッキングキャプショニングを実行するメソッド"""
         while True:
             tracking_data: FrameData = self.queue.get()
             if tracking_data is None:
@@ -102,6 +115,15 @@ class TrackingCaptioning(object):
             image = tracking_data.image
             tracklets = tracking_data.tracklets
             timestamp = tracking_data.timestamp
+            self.lock.acquire()
+            for person in self.cur_tracking_person_list:
+                # トラッキング対象の人物がトラッキング外になった場合
+                # かつ、self.track_finish_id_queueにIDが存在しない場合追加
+                if not self.is_available_in_tracklets(
+                    person.id, tracklets
+                ) and person.id not in list(self.track_finish_id_queue.queue):
+                    person.end_time = timestamp
+                    self.track_finish_id_queue.put(person.id)
             for tracklet in tracklets:
                 target_image = self.get_target_image_from_tracklet(image, tracklet)
                 # OpenCV画像をbase64エンコード
@@ -119,6 +141,7 @@ class TrackingCaptioning(object):
                             appearance_log=response,
                             start_time=timestamp,
                         )
+                        self.cur_tracking_person_list.append(new_person)
                     except grpc.RpcError as e:
                         print(f"RPC error: {e}")
                         continue
@@ -132,13 +155,12 @@ class TrackingCaptioning(object):
                         response = self.vlm_stub.SendImage(request)
                         person_log = self.get_person_log(tracklet.id)
                         person_log.act_log.put(
-                            self.CaptionInfo(
-                                caption=response, timestamp=timestamp
-                            )
+                            self.CaptionInfo(caption=response, timestamp=timestamp)
                         )
                     except grpc.RpcError as e:
                         print(f"RPC error: {e}")
                         continue
+            self.lock.release()
 
     def is_tracking_person(self, tracklet: Any) -> bool:
         """トラッキング中の人物idかどうかを判定する
@@ -151,6 +173,21 @@ class TrackingCaptioning(object):
         """
         for person in self.cur_tracking_person_list:
             if person.id == tracklet.id:
+                return True
+        return False
+
+    def is_available_in_tracklets(self, id: int, tracklets: List[Any]) -> bool:
+        """トラッキング情報の中に指定したIDが存在するかどうかを判定する
+
+        Args:
+            id (int): トラッキング対象の人物ID
+            tracklets (List[Any]): トラッキング情報
+
+        Returns:
+            bool: トラッキング対象の人物であればTrue, それ以外はFalse
+        """
+        for tracklet in tracklets:
+            if tracklet.id == id:
                 return True
         return False
 
@@ -201,26 +238,43 @@ class TrackingCaptioning(object):
                 return person
         return None
 
-    def tmp_summary_act_log(self, person_log: PersonLog) -> None:
-        """アクションログを要約するメソッド"""
-        if person_log.act_log.qsize() < self.MAX_ACT_LOG_SIZE:
+    def tmp_summary_act_log(
+        self, person_log: PersonLog, data_size: Optional[int] = None
+    ) -> None:
+        """アクションログを要約するメソッド
+
+        Args:
+            person_log (PersonLog): 人物ログ
+            data_size (Optional[int]): 要約するデータのサイズ
+                デフォルトはNoneで、MAX_ACT_LOG_SIZEを使用
+        """
+        if len(person_log.act_log) == 0:
             return
-        messages = [self.chat_stream.create_message(text=ACT_LOG_SUMMARISING_PROMPT, role="system")]
+        if data_size is not None:
+            if data_size > len(person_log.act_log):
+                raise ValueError("data_size must be less than act_log length.")
+        else:
+            data_size = len(person_log.act_log)
+        messages = [
+            self.chat_stream.create_message(
+                text=ACT_LOG_SUMMARISING_PROMPT, role="system"
+            )
+        ]
         # self.MAX_ACT_LOG_SIZE回分のログをqueueから取得
-        act_info = ""
-        for _ in range(self.MAX_ACT_LOG_SIZE):
+        query = ""
+        for _ in range(data_size):
             act_data = person_log.act_log.get()
-            act_info += f"{act_data.timestamp.strftime('%H:%M:%S')}: {act_data.caption}\n"
+            query += f"{act_data.timestamp.strftime('%H:%M:%S')}: {act_data.caption}\n"
         messages.append(
             self.chat_stream.create_message(
-                text=act_info,
+                text=query,
                 role="user",
             )
         )
         response = ""
         # 要約を生成
         for sentence in self.chat_stream.chat(
-            messages=act_info,
+            messages=query,
             model="gemini-2.0-flash",
             temperature=0.0,
             stream_per_sentence=True,
@@ -231,116 +285,40 @@ class TrackingCaptioning(object):
 
     def summary_act_log(self, person_log: PersonLog) -> str:
         """アクションログを要約するメソッド"""
-        tmp_summary = ""
+        self.tmp_summary_act_log(person_log=person_log)
+        message = [
+            self.chat_stream.create_message(text=LOG_SUMMARISING_PROMPT, role="system")
+        ]
+        query = f"#外観\n {person_log.appearance_log}\n"
+        query += f"#行動履歴 \n"
         # tmp_summarized_act_logが空でなければ、要約を取得
         if not person_log.tmp_summarized_act_log.empty():
-            tmp_summary += f"{person_log.tmp_summarized_act_log.get()}\n"
-
-
-
-def vlm_caption(queue: Queue[FrameData]) -> None:
-    """VLMのキャプションを取得する関数"""
-
-    while True:
-        image, tracklet,timestamp = queue.get()
-
-        encoded_images = []
-
-        # 画像をbase64エンコード
-        for image_path in :
-            if not os.path.exists(image_path):
-                print(f"Image file does not exist: {image_path}")
-                continue
-            try:
-                with open(image_path, "rb") as image_file:
-                    # 画像データをbase64エンコード（プレフィックスなし）
-                    encoded = base64.b64encode(image_file.read()).decode("utf-8")
-                    encoded_images.append(encoded)
-            except Exception as e:
-                print(f"Error encoding image {image_path}: {e}")
-                continue
-
-        if not encoded_images:
-            print("No valid images to process")
-            return
-        start_time = time.time()
-        # 画像とプロンプトを送信
-        request = local_vlm_server_pb2.SendImageRequest(
-            images=["base64_encoded_image"],
-            prompt="What is this?",
+            query += f" {person_log.tmp_summarized_act_log.get()}\n"
+        message.append(
+            self.chat_stream.create_message(
+                text=query,
+                role="user",
+            )
         )
-        try:
-            response = stub.SendImage(request)
-            print(f"Response: {response.response}")
-            print(f"Time taken: {time.time() - start_time:.2f}s")
-        except grpc.RpcError as e:
-            print(f"RPC error: {e}")
+        response = ""
+        # 要約を生成
+        for sentence in self.chat_stream.chat(
+            messages=query,
+            model="gemini-2.0-flash",
+            temperature=0.0,
+            stream_per_sentence=True,
+        ):
+            response += sentence
+        return response
 
-def main() -> None:
-    # parse arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-r",
-        "--robot_coordinate",
-        help="Convert object pos from camera coordinate to robot coordinate",
-        action="store_true",
-    )
-    args = parser.parse_args()
-    model_path = "model/human_parts.blob"
-    config_path = "config/human_parts.json"
-    download_file(
-        model_path,
-        "https://github.com/AkariGroup/akari_yolo_models/raw/main/human_parts/human_parts.blob",
-    )
-    download_file(
-        config_path,
-        "https://github.com/AkariGroup/akari_yolo_models/raw/main/human_parts/human_parts.json",
-    )
+    def add_log_to_csv(self, person_log: PersonLog, summary: str) -> None:
+        """要約をCSVに追加するメソッド
 
-    # gRPCチャネルを作成
-    channel = grpc.insecure_channel("localhost:10020")
-    stub = local_vlm_server_pb2_grpc.LocalVlmServerServiceStub(channel)
-
-    tracking_data_queue: Queue[FrameData] = Queue()
-    vlm_caption_thread = threading.Thread(target=vlm_caption, args=(tracking_data_queue,))
-    vlm_caption_thread.start()
-
-    end = False
-    while not end:
-        oakd_tracking_yolo = OakdTrackingYolo(
-            config_path="config/human_parts.json",
-            model_path="model/human_parts.blob",
-            fps=args.fps,
-            cam_debug=args.display_camera,
-            robot_coordinate=args.robot_coordinate,
-            track_targets=["person"],
-            show_bird_frame=True,
-        )
-        oakd_tracking_yolo.update_bird_frame_distance(10000)
-        while True:
-            frame = None
-            detections = []
-            try:
-                frame, detections, tracklets = oakd_tracking_yolo.get_frame()
-            except BaseException:
-                print("===================")
-                print("get_frame() error! Reboot OAK-D.")
-                print("If reboot occur frequently, Bandwidth may be too much.")
-                print("Please lower FPS.")
-                print("==================")
-                break
-            if frame is not None:
-                # tracking_data_queueにデータが何もない時のみput
-                if tracking_data_queue.empty():
-                    tracking_data_queue.put(
-                        FrameData(image=frame, tracklets=tracklets, timestamp=datetime.datetime.now())
-                    )
-                oakd_tracking_yolo.display_frame("nn", frame, tracklets)
-            if cv2.waitKey(1) == ord("q"):
-                end = True
-                break
-        oakd_tracking_yolo.close()
-
-
-if __name__ == "__main__":
-    main()
+        Args:
+            person_log (PersonLog): 人物ログ
+            summary (str): 要約
+        """
+        with open(self.log_path, "a") as f:
+            f.write(
+                f"{person_log.id},{person_log.start_time},{person_log.end_time},{summary}\n"
+            )
