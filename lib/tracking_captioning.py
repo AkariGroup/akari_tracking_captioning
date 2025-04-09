@@ -125,6 +125,8 @@ class TrackingCaptioning(object):
                     person.end_time = timestamp
                     self.track_finish_id_queue.put(person.id)
             for tracklet in tracklets:
+                if not tracklet.status.name == "TRACKED":
+                    continue
                 target_image = self.get_target_image_from_tracklet(image, tracklet)
                 # OpenCV画像をbase64エンコード
                 base64_image = self.cv_to_base64(target_image)
