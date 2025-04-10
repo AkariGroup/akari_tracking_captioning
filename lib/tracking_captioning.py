@@ -13,7 +13,7 @@ from queue import Queue
 from typing import List, Any, Optional
 from lib.akari_chatgpt_bot.lib.chat_akari import ChatStreamAkari
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "grpc"))
+sys.path.append(os.path.join(os.path.dirname(__file__), "local_vlm_server/lib/grpc"))
 import local_vlm_server_pb2
 import local_vlm_server_pb2_grpc
 
@@ -69,6 +69,7 @@ class TrackingCaptioning(object):
             port (str): gRPCサーバーのポート番号
         """
         self.MAX_ACT_LOG_SIZE = 120
+        self.ROI_EXPANSION_PIXEL = 30
         self.lock = threading.Lock()
         self.queue = queue
         # gRPCチャネルを作成
@@ -83,7 +84,6 @@ class TrackingCaptioning(object):
         self.log_path = os.path.join(log_dir, f"{now.strftime('%Y%m%d_%H%M%S')}.csv")
         self.log_control_thread = threading.Thread(
             target=self.log_control,
-            args=(self.log_path,),
             daemon=True,
         )
         self.log_control_thread.start()
@@ -127,7 +127,11 @@ class TrackingCaptioning(object):
             for tracklet in tracklets:
                 if not tracklet.status.name == "TRACKED":
                     continue
-                target_image = self.get_target_image_from_tracklet(image, tracklet)
+                target_image = self.get_target_image_from_tracklet(
+                    frame=image,
+                    tracklet=tracklet,
+                    expantion_pixel=self.ROI_EXPANSION_PIXEL,
+                )
                 # OpenCV画像をbase64エンコード
                 base64_image = self.cv_to_base64(target_image)
                 if not self.is_tracking_person(tracklet):
@@ -145,7 +149,7 @@ class TrackingCaptioning(object):
                         )
                         self.cur_tracking_person_list.append(new_person)
                     except grpc.RpcError as e:
-                        print(f"RPC error: {e}")
+                        print(f"Send image RPC error: {e}")
                         continue
                 else:
                     # VLMに送信
@@ -160,7 +164,7 @@ class TrackingCaptioning(object):
                             self.CaptionInfo(caption=response, timestamp=timestamp)
                         )
                     except grpc.RpcError as e:
-                        print(f"RPC error: {e}")
+                        print(f"Send image RPC error: {e}")
                         continue
             self.lock.release()
 
@@ -206,7 +210,7 @@ class TrackingCaptioning(object):
         return base64.b64encode(encoded).decode("ascii")
 
     def get_target_image_from_tracklet(
-        self, frame: np.ndarray, tracklet: Any
+        self, frame: np.ndarray, tracklet: Any, expantion_pixel: int = 0
     ) -> np.ndarray:
         """
         トラッキング対象の画像を切り出す
@@ -214,16 +218,26 @@ class TrackingCaptioning(object):
         Args:
             frame (np.ndarray): カメラ画像
             tracklet (Any): トラッキング情報
+            expantion_pixel (int): ここで指定した値だけ、ROIの範囲を拡大する
+                デフォルトは0で、拡大しない
 
         Returns:
             np.ndarray: 切り出したトラッキング対象の画像
         """
         # TODO: 対象以外の人の顔をマスクする処理の追加
         roi = tracklet.roi.denormalize(frame.shape[1], frame.shape[0])
-        x1 = int(roi.topLeft().x)
-        y1 = int(roi.topLeft().y)
-        x2 = int(roi.bottomRight().x)
-        y2 = int(roi.bottomRight().y)
+        x1 = int(roi.topLeft().x) - expantion_pixel
+        if x1 < 0:
+            x1 = 0
+        y1 = int(roi.topLeft().y) - expantion_pixel
+        if y1 < 0:
+            y1 = 0
+        x2 = int(roi.bottomRight().x) + expantion_pixel
+        if x2 > frame.shape[1]:
+            x2 = frame.shape[1]
+        y2 = int(roi.bottomRight().y) + expantion_pixel
+        if y2 > frame.shape[0]:
+            y2 = frame.shape[0]
         return frame[y1:y2, x1:x2]
 
     def get_person_log(self, id: int) -> Optional["PersonLog"]:

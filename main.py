@@ -52,8 +52,7 @@ def main() -> None:
         oakd_tracking_yolo = OakdTrackingYolo(
             config_path="config/human_parts.json",
             model_path="model/human_parts.blob",
-            fps=args.fps,
-            cam_debug=args.display_camera,
+            fps=8,
             robot_coordinate=args.robot_coordinate,
             show_bird_frame=True,
             show_orbit=False,
