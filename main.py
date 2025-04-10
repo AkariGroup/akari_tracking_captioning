@@ -54,6 +54,7 @@ def main() -> None:
             model_path="model/human_parts.blob",
             fps=8,
             robot_coordinate=args.robot_coordinate,
+            track_targets=["person"],
             show_bird_frame=True,
             show_orbit=False,
         )
