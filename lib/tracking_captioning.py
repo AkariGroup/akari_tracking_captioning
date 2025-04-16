@@ -76,9 +76,10 @@ class TrackingCaptioning(object):
             port (str): gRPCサーバーのポート番号
         """
         self.MAX_ACT_LOG_SIZE = 120
-        self.ROI_EXPANSION_PIXEL = 30
+        self.ROI_EXPANSION_PIXEL = 80
         self.lock = threading.Lock()
         self.queue = queue
+        self.is_active = True
         # gRPCチャネルを作成
         channel = grpc.insecure_channel(f"{host}:{port}")
         self.vlm_stub = local_vlm_server_pb2_grpc.LocalVlmServerServiceStub(channel)
@@ -95,9 +96,13 @@ class TrackingCaptioning(object):
         )
         self.log_control_thread.start()
 
+    def close(self) -> None:
+        """終了処理"""
+        self.is_active = False
+
     def log_control(self) -> None:
         """ログ制御スレッド"""
-        while True:
+        while self.is_active:
             # action_logが指定サイズ以上になったら要約を生成
             for person in self.cur_tracking_person_list:
                 if person.act_log.qsize() > self.MAX_ACT_LOG_SIZE:
@@ -116,7 +121,7 @@ class TrackingCaptioning(object):
 
     def run(self) -> None:
         """トラッキングキャプショニングを実行するメソッド"""
-        while True:
+        while self.is_active:
             tracking_data: FrameData = self.queue.get()
             if tracking_data is None:
                 continue
@@ -179,6 +184,7 @@ class TrackingCaptioning(object):
                         print(f"Send image RPC error: {e}")
                         continue
             self.lock.release()
+        print("run finished")
 
     def is_tracking_person(self, tracklet: Any) -> bool:
         """トラッキング中の人物idかどうかを判定する

@@ -1,4 +1,3 @@
-accelerate
 akari-client[depthai]
 akari-proto
 anthropic
@@ -16,5 +15,3 @@ protobuf
 pydantic>=2.0.0
 pyvips
 pyvips-binary
-torch
-transformers

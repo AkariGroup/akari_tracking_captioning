@@ -61,7 +61,6 @@ def main() -> None:
         oakd_tracking_yolo.update_bird_frame_distance(10000)
         while True:
             frame = None
-            detections = []
             try:
                 frame, detections, tracklets = oakd_tracking_yolo.get_frame()
             except BaseException:
@@ -86,6 +85,7 @@ def main() -> None:
                 end = True
                 break
         oakd_tracking_yolo.close()
+        tracking_captioning.close()
 
 
 if __name__ == "__main__":
