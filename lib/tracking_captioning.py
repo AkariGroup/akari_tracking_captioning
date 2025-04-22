@@ -56,7 +56,7 @@ class PersonLog(object):
 
     def __init__(self, id: int, start_time: datetime.datetime) -> None:
         self.id: int = id
-        self.appearance_log: str = None
+        self.appearance_log: Optional[str] = None
         self.act_log: Queue[TrackingCaptioning.CaptionInfo] = Queue()
         self.tmp_summarized_act_log: Queue[str] = Queue()
         self.start_time: datetime.datetime = start_time
