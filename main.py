@@ -44,7 +44,9 @@ def main() -> None:
     tracking_captioning = TrackingCaptioning(
         queue=tracking_data_queue, host=args.vlm_host, port=args.vlm_port
     )
-    tracking_caption_thread = threading.Thread(target=tracking_captioning.run)
+    tracking_caption_thread = threading.Thread(
+        target=tracking_captioning.run, daemon=True
+    )
     tracking_caption_thread.start()
 
     end = False
