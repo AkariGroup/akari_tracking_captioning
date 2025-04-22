@@ -1,11 +1,17 @@
-accelerate
+akari-client[depthai]
+akari-proto
+anthropic
 einops
+google-genai
+-e lib/akari_chatgpt_bot/gpt-stream-json-parser/
 grpcio
 grpcio-tools
+ndjson
+openai
 opencv-python
+numpy
 pillow
 protobuf
+pydantic>=2.0.0
 pyvips
 pyvips-binary
-torch
-transformers
