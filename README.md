@@ -4,6 +4,9 @@ OAK-Dカメラを使用して人物を検出・追跡し、その人物の外観
 
 ## 概要
 
+
+![概要図](images/overall.png "概要図")
+
 このシステムは以下の機能を提供します：
 
 - OAK-Dカメラを使用した人物の検出と追跡
@@ -15,6 +18,7 @@ OAK-Dカメラを使用して人物を検出・追跡し、その人物の外観
 ## 必要な環境
 - AKARI(本アプリを実行)
 - Nvidia GPUを搭載したPC([local_vlm_server](https://github.com/AkariGroup/local_vlm_server) を実行)
+- GeminiのAPIキー
 
 ## セットアップ
 1. submoduleの初期化
@@ -39,6 +43,11 @@ python -m venv venv
 ```bash
 pip install -r requirements.txt
 ```
+
+1. GEMINI API KEYの作成   
+[Google AI Studio](https://ai.google.dev/aistudio)にてユーザ登録しAPI KEYを作成し、~/.bashrcに自身のkeyを記述  
+`export GEMINI_API_KEY=xxxxxxxxxxxxxxx`  
+
 
 5. Nvidia GPUを搭載したPCで[local_vlm_server](https://github.com/AkariGroup/local_vlm_server)をREADMEに沿ってセットアップ。
 
