@@ -307,7 +307,6 @@ class TrackingCaptioning(object):
         )
         response = ""
         # 要約を生成
-        print(f"tmp summarizing action log... query: {query}")
         for sentence in self.chat_captioning.chat(
             messages=messages,
             model="gemini-2.0-flash",
@@ -315,7 +314,6 @@ class TrackingCaptioning(object):
             stream_per_sentence=True,
         ):
             response += sentence
-        print(f"tmp summarizing action log... response: {response}")
         # 要約をキューに追加
         person_log.tmp_summarized_act_log.put(response)
 
@@ -347,7 +345,6 @@ class TrackingCaptioning(object):
         )
         response = ""
         # 要約を生成
-        print(f"summarizing log... query: {query}")
         for sentence in self.chat_captioning.captioning_gemini(
             messages=messages,
             model="gemini-2.0-flash",

@@ -54,7 +54,7 @@ def main() -> None:
         oakd_tracking_yolo = OakdTrackingYolo(
             config_path="config/human_parts.json",
             model_path="model/human_parts.blob",
-            fps=8,
+            fps=6,
             robot_coordinate=args.robot_coordinate,
             track_targets=["person"],
             show_bird_frame=True,
